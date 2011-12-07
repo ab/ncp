@@ -1,0 +1,94 @@
+#!/bin/bash
+set -e
+set -o nounset
+
+usage() {
+    cat >&2 <<EOM
+Usage: $(basename "$0") [options] [user@]src:file [user@]dst:file port
+
+Copy a file over the network between two remote hosts using netcat.
+
+Options:
+    -h       Display this help
+    -d HOST  Use HOST as destination hostname for netcat on sender
+    -p       Show progress using \`pv\` on sender
+    -w WAIT  Sleep for WAIT seconds before starting the sender
+
+EOM
+}
+
+if ! which tmux > /dev/null; then
+	echo>&2 "$(basename "$0"): tmux: command not found"
+	exit 3
+fi
+
+dest_hostname=
+recv_progress=
+progress=
+delay=0.5
+
+while getopts hd:pw: OPT; do
+    case $OPT in
+        h)  usage
+            exit 0
+            ;;
+        d)  dest_hostname="$OPTARG" ;;
+        p)  progress=1 ;;
+        w)  delay="$OPTARG" ;;
+        \?)
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+shift $((OPTIND-1))
+
+if [ $# -lt 3 ]; then
+    usage
+    exit 1
+fi
+
+src="$1"
+dst="$2"
+port="$3"
+
+src_file="$(echo "$src" | cut -d: -f2)"
+dst_file="$(echo "$dst" | cut -d: -f2)"
+src_ssh="$(echo "$src" | cut -d: -f1)"
+dst_ssh="$(echo "$dst" | cut -d: -f1)"
+
+if [ -z "$dest_hostname" ]; then
+    dest_hostname="$(echo "$dst_ssh" | cut -d@ -f2)"
+fi
+
+if [ -n "$recv_progress" ]; then
+    # get file size
+    size="$(ssh $src_ssh "du --bytes '$src_file'")"
+    size="$(echo "$size" | cut -f1 -d'	')"
+fi
+
+session=$(mktemp -u ncp-XXXX)
+tmux new-session -d -s $session
+
+tmux_cmd() {
+    tmux send-keys -t $session "$1"
+}
+
+if [ -n "$recv_progress" ]; then
+    tmux_cmd "ssh -t $dst_ssh 'nc -v -l $port | pv -W --size $size > \"$dst_file\"'"
+else
+    tmux_cmd "ssh -t $dst_ssh 'nc -v -l $port > \"$dst_file\"'"
+fi
+
+sleep "$delay"
+
+tmux split-window -t $session -v
+
+if [ -n "$progress" ]; then
+    tmux_cmd "ssh -t $src_ssh 'pv \"$src_file\" | nc -v $dest_hostname $port'"
+else
+    tmux_cmd "ssh -t $src_ssh 'nc -v $dest_hostname $port < \"$src_file\"'"
+fi
+
+tmux attach -t $session
