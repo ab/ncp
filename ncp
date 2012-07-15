@@ -17,10 +17,7 @@ Options:
 EOM
 }
 
-if ! which tmux > /dev/null; then
-    echo>&2 "$(basename "$0"): tmux: command not found"
-    exit 3
-fi
+tmux -V > /dev/null
 
 dest_hostname=
 recv_progress=
